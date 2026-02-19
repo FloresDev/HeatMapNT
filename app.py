@@ -291,8 +291,9 @@ def main():
         fecha_min, fecha_max = min_date, max_date
     st.sidebar.caption(f"Rango: {fecha_min.strftime('%d/%m/%Y')} – {fecha_max.strftime('%d/%m/%Y')}")
 
-    meses = st.sidebar.multiselect("Meses (vacío = todos)", options=list(range(1, 13)), format_func=lambda x: pd.Timestamp(2000, x, 1).strftime("%B"))
-    días_semana = st.sidebar.multiselect("Días de la semana", options=list(range(7)), format_func=lambda x: ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"][x])
+    MESES_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+    meses = st.sidebar.multiselect("Meses (vacío = todos)", options=list(range(1, 13)), format_func=lambda x: MESES_ES[x - 1], placeholder="Elegir meses")
+    días_semana = st.sidebar.multiselect("Días de la semana", options=list(range(7)), format_func=lambda x: ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][x], placeholder="Elegir días")
 
     df_filt = df[
         (df["_fecha"].dt.date >= fecha_min) &
