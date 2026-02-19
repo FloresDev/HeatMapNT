@@ -39,6 +39,10 @@ USER_AGENT = "HeatMapNT-offline-geocode/1.0"
 
 # Bounding box España (lon_sw, lat_sw, lon_ne, lat_ne) para priorizar resultados en España
 VIEWBOX_ES = (-9.5, 35.5, 4.5, 43.8)
+# Viewboxes por ciudad para que "Marqués de la Valdavia, Alcobendas" no devuelva Madrid
+VIEWBOX_ALCOBENDAS = (-3.67, 40.50, -3.61, 40.57)   # (lon_sw, lat_sw, lon_ne, lat_ne)
+VIEWBOX_SAN_SEBASTIAN = (-3.63, 40.54, -3.60, 40.59)
+VIEWBOX_MADRID = (-3.75, 40.38, -3.58, 40.50)
 
 
 def _alternativas_busqueda(addr: str) -> List[str]:
@@ -209,30 +213,27 @@ def _buscar_similar(addr: str, filas_existentes: List[dict], umbral: float = 0.9
     return mejor_fila
 
 
-def _geocode_una(geolocator: Nominatim, query: str) -> Optional[Tuple[float, float]]:
+def _geocode_una(
+    geolocator: Nominatim,
+    query: str,
+    viewbox: Optional[Tuple[float, float, float, float]] = None,
+) -> Optional[Tuple[float, float]]:
     """Intenta geocodificar una sola cadena; devuelve (lat, lon) o None.
 
-    Nota: mantenemos la llamada lo más simple posible porque con
-    `country_codes`/`viewbox` algunas direcciones estaban devolviendo
-    sistemáticamente "Sin resultados" aunque Nominatim sí las resuelve.
+    Si se pasa viewbox (lon_sw, lat_sw, lon_ne, lat_ne), Nominatim prioriza resultados en esa zona.
     """
+    kwargs: dict = {"timeout": 15, "exactly_one": True}
+    if viewbox is not None:
+        kwargs["viewbox"] = viewbox
+        kwargs["bounded"] = False
     try:
-        loc = geolocator.geocode(
-            query,
-            timeout=15,
-            exactly_one=True,
-            # Si en el futuro hace falta, se puede volver a añadir:
-            # viewbox=VIEWBOX_ES,
-            # bounded=False,
-            # country_codes="es",
-        )
+        loc = geolocator.geocode(query, **kwargs)
     except Exception as e:
         print(f"  ⚠️  Error geocodificando '{query}': {e}")
         return None
     if loc is None:
         return None
     lat, lon = loc.latitude, loc.longitude
-    # Descartar resultados claramente fuera de España (ej. "1, España" que devuelve Argentina)
     lon_sw, lat_sw, lon_ne, lat_ne = VIEWBOX_ES
     lon_min, lon_max = sorted((lon_sw, lon_ne))
     lat_min, lat_max = sorted((lat_sw, lat_ne))
@@ -240,6 +241,18 @@ def _geocode_una(geolocator: Nominatim, query: str) -> Optional[Tuple[float, flo
         print(f"  ⚠️  Resultado fuera de España ({lat:.6f}, {lon:.6f}), descartando.")
         return None
     return (lat, lon)
+
+
+def _viewbox_para_direccion(addr: str) -> Optional[Tuple[float, float, float, float]]:
+    """Si la dirección menciona una ciudad concreta, devuelve su viewbox para priorizar resultados."""
+    a = addr.lower()
+    if "alcobendas" in a:
+        return VIEWBOX_ALCOBENDAS
+    if "san sebastián" in a or "san sebastian" in a or "2870" in addr:
+        return VIEWBOX_SAN_SEBASTIAN
+    if "madrid" in a and "alcobendas" not in a:
+        return VIEWBOX_MADRID
+    return None
 
 
 def geocode_direcciones(unicas_ordenadas: List[str], ya_hechas: Set[str]) -> List[dict]:
@@ -293,14 +306,15 @@ def geocode_direcciones(unicas_ordenadas: List[str], ya_hechas: Set[str]) -> Lis
                 continue
 
         print(f"[{i}/{total}] Geocodificando: {addr}")
-        coords = _geocode_una(geolocator, addr)
+        viewbox = _viewbox_para_direccion(addr)
+        coords = _geocode_una(geolocator, addr, viewbox)
         usado_fallback = False
         if coords is None:
             for alternativa in _alternativas_busqueda(addr):
                 if alternativa == addr:
                     continue
                 time.sleep(GEOCODE_DELAY_SEC)
-                coords = _geocode_una(geolocator, alternativa)
+                coords = _geocode_una(geolocator, alternativa, viewbox)
                 if coords is not None:
                     usado_fallback = True
                     print(f"  ✔ (fallback: «{alternativa[:50]}…») {coords[0]:.6f}, {coords[1]:.6f}")

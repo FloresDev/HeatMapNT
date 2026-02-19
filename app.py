@@ -3,6 +3,7 @@ Mapa de calor de servicios de taxi.
 Coordenadas en el mapa: por Zona (zonas_coordenadas.csv). Opcional: data/direcciones_coordenadas.csv con pocas direcciones (texto, lat, lon) para fijar puntos concretos.
 """
 import re
+import unicodedata
 import streamlit as st
 import pandas as pd
 import folium
@@ -43,6 +44,10 @@ ZONAS_FILE = DATA_DIR / "zonas_coordenadas.csv"
 CANCELLED_STATUS_VALUES = {"cancelled", "canceled", "cancelado", "cancelada", "cancelled by", "no show", "no-show"}
 # Zonas con mapa de calor más fino (jitter para repartir el calor)
 ZONAS_MAS_FINO = {"ALC", "ANB", "DIV", "URBA", "ALG", "SAN", "SSR", "LMO", "LTB", "SCH"}
+# Límite de puntos en el mapa de calor para que siga siendo fluido
+MAX_HEATMAP_POINTS = 30000
+# Solo usamos coords de direcciones_coordenadas.csv si caen en este área (evita puntos en Sevilla/Barcelona por geocodificación errónea)
+BBOX_MADRID = (39.2, 41.2, -4.2, -3.0)  # lat_min, lat_max, lon_min, lon_max
 # Columna cliente/cuenta para filtrar por cliente
 CLIENTE_COLS = ["Cuenta", "Cliente", "Código de Cuenta", "Cliente de cuenta"]
 # Columna ID de servicio (para búsqueda y detalle)
@@ -150,6 +155,87 @@ def load_zonas_mapping() -> Optional[pd.DataFrame]:
 DIRECCIONES_FILE = DATA_DIR / "direcciones_coordenadas.csv"
 
 
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+
+def _canonical_address_key(texto: str) -> str:
+    """
+    Clave canónica para agrupar variantes de la misma dirección portal:
+    - Quita prefijos de empresa (OUIGO, NORT TAXI, HOTEL AC, etc.).
+    - Normaliza (minúsculas, sin tildes, sin tipo de vía).
+    - Usa el primer número arábigo como portal; "Alfonso XII 62" -> calle "alfonso xii", portal 62.
+    - Sin número: usa últimas 1-2 palabras como calle (ej. "alfonso xii") para emparejar con "alfonso xii_62".
+
+    Así "Alfonso XII OUIGO", "OUIGO ESPAÑA, Calle de Alfonso XII" y "Alfonso XII 62" comparten clave.
+    """
+    if texto is None or (isinstance(texto, float) and pd.isna(texto)):
+        return ""
+    s = str(texto).strip().lower()
+    if not s:
+        return ""
+    s = _strip_accents(s)
+    # Quitar prefijos de empresa/lugar que impiden agrupar (OUIGO, NORT TAXI, HOTEL X, etc.)
+    s = re.sub(
+        r"^(ouigo\s+espana|nort\s*taxi|hotel\s+ac\.?|hotel\s+[^,]+|[\w\s\-]+\s*\(empresa\)|[\w\s\-]+\s*\(hotel\)),\s*",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = s.replace(",", " ").replace(";", " ")
+    # Estandarizar y/o eliminar tipos de vía
+    s = re.sub(
+        r"\b(calle|cl|c/|c\.|avda\.?|av\.?|avenida|paseo|ps\.?|pº|p\.º|plaza|pl\.?)\b",
+        " ",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(r"\s+", " ", s).strip()
+    # Primer número arábigo como portal (no romanos tipo XII)
+    m = re.search(r"(?<!\w)(\d+)(?:\s*[-–—]?\s*\d*)?(?:\s|$)", s)
+    if not m:
+        # Sin número: usar últimas 1-2 palabras como "calle" para emparejar con claves tipo "alfonso xii_62"
+        partes = [p for p in s.split() if len(p) > 1 and p not in ("espana", "madrid", "alcobendas", "san", "sebastian", "reyes")]
+        if len(partes) >= 2:
+            return " ".join(partes[-2:])
+        return " ".join(partes[-1:]) if partes else s
+    num = m.group(1)
+    antes = s[: m.start(1)].strip()
+    # Si el número está al inicio (ej. "1 Calle Marqués de la Valdavia"), usar el texto después del número como calle
+    if not antes:
+        despues = s[m.end(1) :].strip()
+        partes = [p for p in despues.split() if p not in ("espana", "madrid", "alcobendas", "san", "sebastian", "reyes")]
+        if len(partes) >= 2:
+            calle_core = " ".join(partes[-2:])
+        else:
+            calle_core = " ".join(partes[-1:]) if partes else ""
+    else:
+        partes = antes.split()
+        if len(partes) >= 2:
+            calle_core = " ".join(partes[-2:])
+        else:
+            calle_core = partes[-1]
+    if not calle_core:
+        return ""
+    return f"{calle_core}_{num}"
+
+
+def _coords_zone(lat: float, lon: float) -> str:
+    """Zona aproximada para priorizar coords que coincidan con la ciudad en el texto."""
+    if not (39.2 <= lat <= 41.2 and -4.2 <= lon <= -3.0):
+        return "other"
+    # Alcobendas (aprox)
+    if 40.50 <= lat <= 40.57 and -3.67 <= lon <= -3.61:
+        return "alcobendas"
+    # San Sebastián de los Reyes
+    if 40.54 <= lat <= 40.59 and -3.63 <= lon <= -3.60:
+        return "san_sebastian"
+    # Madrid capital (centro y alrededores)
+    if 40.38 <= lat <= 40.50 and -3.75 <= lon <= -3.58:
+        return "madrid"
+    return "other"
+
+
 def load_direcciones_mapping() -> Optional[pd.DataFrame]:
     """Opcional: CSV con columnas texto, lat, lon. Si Recoger contiene 'texto', se usan esas coords en el mapa (solo para unas pocas direcciones que añadas a mano)."""
     if not DIRECCIONES_FILE.exists():
@@ -158,6 +244,8 @@ def load_direcciones_mapping() -> Optional[pd.DataFrame]:
         d = pd.read_csv(DIRECCIONES_FILE)
         if "texto" not in d.columns or "lat" not in d.columns or "lon" not in d.columns:
             return None
+        d["texto"] = d["texto"].astype(str)
+        d["_clave"] = d["texto"].map(_canonical_address_key)
         return d
     except Exception:
         return None
@@ -331,48 +419,152 @@ def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Op
     # Opcional: pocas direcciones con coordenadas fijas (sin geocodificar). Si Recoger contiene el texto, se usa esa lat/lon en el mapa.
     dir_coords = load_direcciones_mapping()
     if recogida_col and dir_coords is not None and not dir_coords.empty and "_lat" in df.columns:
-        texto_recogida = df[recogida_col].astype(str).str.lower()
-        for _, dr in dir_coords.iterrows():
-            texto = (dr.get("texto") or "").strip().lower()
-            if not texto or pd.isna(dr.get("lat")) or pd.isna(dr.get("lon")):
-                continue
-            try:
-                lat_d, lon_d = float(dr["lat"]), float(dr["lon"])
-            except (TypeError, ValueError):
-                continue
-            mask = texto_recogida.str.contains(re.escape(texto), na=False)
-            if mask.any():
-                df.loc[mask, "_lat"] = lat_d
-                df.loc[mask, "_lon"] = lon_d
+        df["_dir_clave"] = df[recogida_col].map(_canonical_address_key)
+        claves_validas = dir_coords["_clave"].dropna().astype(str)
+        dir_coords = dir_coords[claves_validas.str.len() > 0].copy()
+        if not dir_coords.empty:
+            lat_min, lat_max, lon_min, lon_max = BBOX_MADRID
+            # Lista (clave, lat, lon, texto) solo dentro de Madrid
+            candidatos: List[tuple] = []
+            for _, dr in dir_coords.iterrows():
+                clave = str(dr.get("_clave") or "").strip()
+                if not clave:
+                    continue
+                try:
+                    lat_d, lon_d = float(dr["lat"]), float(dr["lon"])
+                except (TypeError, ValueError):
+                    continue
+                if lat_min <= lat_d <= lat_max and lon_min <= lon_d <= lon_max:
+                    texto = str(dr.get("texto") or "")
+                    candidatos.append((clave, lat_d, lon_d, texto))
+            # Por cada clave, quedarnos con la mejor: que la ciudad en el texto coincida con la zona de las coords
+            def score(c: tuple) -> int:
+                clave, lat_d, lon_d, texto = c
+                z = _coords_zone(lat_d, lon_d)
+                t = texto.lower()
+                if z == "alcobendas" and "alcobendas" in t:
+                    return 0
+                if z == "san_sebastian" and ("san sebastian" in t or "san sebastián" in t or "ssr" in t):
+                    return 1
+                if z == "madrid" and "madrid" in t and "alcobendas" not in t:
+                    return 2
+                return 3
+            clave_to_coords: dict = {}
+            for clave in set(c[0] for c in candidatos):
+                mismos = [c for c in candidatos if c[0] == clave]
+                mejores = sorted(mismos, key=score)
+                lat_d, lon_d = mejores[0][1], mejores[0][2]
+                clave_to_coords[clave] = (lat_d, lon_d)
+            # "alfonso xii_62" -> también "alfonso xii" con las mismas coords (para OUIGO sin número)
+            for clave in list(clave_to_coords.keys()):
+                if re.match(r"^.+\_\d+$", clave):
+                    base = clave.rsplit("_", 1)[0].strip()
+                    if base and base not in clave_to_coords:
+                        clave_to_coords[base] = clave_to_coords[clave]
+            if clave_to_coords:
+                for clave, (lat_d, lon_d) in clave_to_coords.items():
+                    df.loc[df["_dir_clave"] == clave, ["_lat", "_lon"]] = (lat_d, lon_d)
 
     return df
 
 
 def build_heatmap_data(df: pd.DataFrame) -> list:
-    """Convierte el DataFrame a lista [lat, lon, weight] para HeatMap. En ZONAS_MAS_FINO aplica jitter para calor más fino."""
+    """Convierte el DataFrame a lista [lat, lon, weight, label] para HeatMap (vista por servicio).
+
+    Agrupa por (_lat, _lon), suma _weight y toma una dirección representativa para el tooltip.
+    """
+    recogida_col = find_column(df, RECOGIDA_COLS)
+    agg = df.groupby(["_lat", "_lon"], as_index=False)["_weight"].sum()
+    if recogida_col and recogida_col in df.columns:
+        first_addr = df.groupby(["_lat", "_lon"], as_index=False)[recogida_col].first()
+        agg = agg.merge(first_addr, on=["_lat", "_lon"], how="left")
+    else:
+        agg["_label"] = ""
     out = []
-    for i, row in df.iterrows():
+    for _, row in agg.iterrows():
         lat, lon = float(row["_lat"]), float(row["_lon"])
         w = float(row["_weight"])
-        zona = (row.get("_zona") or "").strip().upper()
-        if zona in ZONAS_MAS_FINO:
-            # Jitter determinista (± ~0.012°) para repartir el calor y que se vea bien cada zona (Alcobendas, Sanse, etc.)
-            h = hash((i, "lat")) % 2000
-            lat += (h - 1000) / 80000.0
-            h = hash((i, "lon")) % 2000
-            lon += (h - 1000) / 80000.0
-        out.append([lat, lon, w])
+        label = str(row.get(recogida_col or "_label", "") or "").strip()
+        out.append([lat, lon, w, label])
     return out
 
 
-def create_heatmap(df: pd.DataFrame, center_lat: float = 40.42, center_lon: float = -3.70, zoom: int = 12) -> folium.Map:
-    """Crea un mapa Folium con capa de calor."""
-    data = build_heatmap_data(df)
-    if not data:
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom)
-        return m
+def create_zonas_circles(
+    df: pd.DataFrame,
+    center_lat: float = 40.42,
+    center_lon: float = -3.70,
+    zoom: int = 12,
+) -> folium.Map:
+    """Crea un mapa con círculos por zona, radio en metros proporcional a servicios."""
     m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom)
-    HeatMap(data, radius=25, blur=20, max_zoom=14).add_to(m)
+    if df.empty or "_lat" not in df.columns or "_lon" not in df.columns or "_weight" not in df.columns:
+        return m
+
+    max_w = float(df["_weight"].max() or 1.0)
+    # Radios en metros (mínimo y máximo)
+    min_r, max_r = 300, 2200
+
+    for _, row in df.iterrows():
+        lat, lon = float(row["_lat"]), float(row["_lon"])
+        w = float(row["_weight"])
+        frac = max(0.0, min(1.0, w / max_w))
+        radius = min_r + frac * (max_r - min_r)
+        # Color según intensidad
+        if frac > 0.66:
+            color = "#e31a1c"  # rojo fuerte
+        elif frac > 0.33:
+            color = "#fd8d3c"  # naranja
+        else:
+            color = "#fed976"  # amarillo
+
+        label = f"{row.get('_zona', '')}: {int(w)} servicios"
+        folium.Circle(
+            location=[lat, lon],
+            radius=radius,
+            color=color,
+            weight=2,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.45,
+            tooltip=label,
+        ).add_to(m)
+    return m
+
+
+def create_heatmap(
+    df: pd.DataFrame,
+    center_lat: float = 40.42,
+    center_lon: float = -3.70,
+    zoom: int = 12,
+    modo: str = "por_servicio",
+) -> folium.Map:
+    """Crea mapa:
+    - Por servicio: HeatMap puntual.
+    - Por zona: Círculos con radio en metros según nº de servicios.
+    """
+    if modo == "por_zona":
+        # df ya viene agregado por zona (_zona, _lat, _lon, _weight)
+        return create_zonas_circles(df, center_lat=center_lat, center_lon=center_lon, zoom=zoom)
+
+    # Vista por servicio -> heatmap clásico + círculos invisibles con tooltip "N servicios"
+    if len(df) > MAX_HEATMAP_POINTS:
+        df = df.sample(MAX_HEATMAP_POINTS, random_state=42)
+    data = build_heatmap_data(df)
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom)
+    if not data:
+        return m
+    HeatMap([[p[0], p[1], p[2]] for p in data], radius=10, blur=6, max_zoom=14).add_to(m)
+    # Círculos invisibles para tooltip: dirección arriba y "N servicios" debajo
+    for lat, lon, w, label in sorted(data, key=lambda x: x[2]):
+        tip = f"{label}\n{int(w)} servicios" if label.strip() else f"{int(w)} servicios"
+        folium.Circle(
+            location=[lat, lon],
+            radius=25,
+            fill=True,
+            fill_opacity=0,
+            weight=0,
+            tooltip=tip,
+        ).add_to(m)
     return m
 
 
@@ -606,7 +798,7 @@ def main():
                 else:
                     st.warning("El CSV no tiene columna de zona; solo se puede usar vista por servicio.")
 
-            m = create_heatmap(df_mapa)
+            m = create_heatmap(df_mapa, modo=vista_mapa)
             st_folium(m, use_container_width=True, height=500)
             # Ranking por zona (identificador de zona como clave principal)
             zone_col = find_column(df, ZONE_COLS)
@@ -627,9 +819,11 @@ def main():
                         "Zona (nombre)": [code_to_name.get(c, "") for c in por_zona.index],
                     }
                 )
-                # Gráfico: eje Y en enteros = número de servicios
+                # Gráfico: solo top 20 zonas para que todas las etiquetas (incl. SAN, SSR) se vean
+                TOP_ZONAS_GRAFICO = 20
+                chart_df = ranking_df.head(TOP_ZONAS_GRAFICO)
                 chart = (
-                    alt.Chart(ranking_df)
+                    alt.Chart(chart_df)
                     .mark_bar()
                     .encode(
                         x=alt.X("Código:N", sort="-y", title="Zona"),
@@ -642,6 +836,8 @@ def main():
                     )
                 )
                 st.altair_chart(chart, use_container_width=True)
+                if len(ranking_df) > TOP_ZONAS_GRAFICO:
+                    st.caption(f"Mostrando las {TOP_ZONAS_GRAFICO} zonas con más servicios. Tabla completa debajo.")
                 # Tabla ranking: identificador + nombre (si existe)
                 ranking_df = ranking_df.set_index("Código")
                 if "_cancelado" in df_filt.columns:
