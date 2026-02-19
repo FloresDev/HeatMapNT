@@ -1,23 +1,16 @@
 """
 Mapa de calor de servicios de taxi.
 Filtros por día/mes y comparativa entre días.
-Coordenadas en el mapa: por Zona; si hay columna Recoger, se geocodifican las direcciones (Nominatim/OSM) para posicionar cada punto.
+Coordenadas en el mapa: por Zona (zonas_coordenadas.csv). Opcional: data/direcciones_coordenadas.csv con pocas direcciones (texto, lat, lon) para fijar puntos concretos sin geocodificar.
 """
 import re
-import time
 import streamlit as st
 import pandas as pd
 import folium
 from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 from pathlib import Path
-from typing import Optional, List, Tuple
-
-try:
-    from geopy.geocoders import Nominatim
-    GEOPY_AVAILABLE = True
-except ImportError:
-    GEOPY_AVAILABLE = False
+from typing import Optional, List
 
 # Configuración de página
 st.set_page_config(
@@ -153,60 +146,20 @@ def load_zonas_mapping() -> Optional[pd.DataFrame]:
     return z
 
 
-# Límite de direcciones a geocodificar por sesión (Nominatim pide ~1 req/s)
-GEOCODE_MAX_PER_RUN = 400
-GEOCODE_DELAY_SEC = 1.1
+DIRECCIONES_FILE = DATA_DIR / "direcciones_coordenadas.csv"
 
 
-def _geocode_one(address: str) -> Optional[Tuple[float, float]]:
-    """Geocodifica una dirección con Nominatim (OpenStreetMap). Devuelve (lat, lon) o None."""
-    if not GEOPY_AVAILABLE or not address or not str(address).strip():
+def load_direcciones_mapping() -> Optional[pd.DataFrame]:
+    """Opcional: CSV con columnas texto, lat, lon. Si Recoger contiene 'texto', se usan esas coords en el mapa (solo para unas pocas direcciones que añadas a mano)."""
+    if not DIRECCIONES_FILE.exists():
         return None
     try:
-        geolocator = Nominatim(user_agent="HeatMapNT-taxi-map/1.0")
-        location = geolocator.geocode(str(address).strip(), timeout=10, exactly_one=True)
-        if location:
-            return (location.latitude, location.longitude)
+        d = pd.read_csv(DIRECCIONES_FILE)
+        if "texto" not in d.columns or "lat" not in d.columns or "lon" not in d.columns:
+            return None
+        return d
     except Exception:
-        pass
-    return None
-
-
-def _ensure_geocode_cache(
-    df_filt: pd.DataFrame,
-    recogida_col: str,
-) -> dict:
-    """Rellena la caché de geocodificación para las direcciones únicas en df_filt. Usa st.session_state['geocode_cache']."""
-    if "_geocode_cache" not in st.session_state:
-        st.session_state["_geocode_cache"] = {}
-    cache = st.session_state["_geocode_cache"]
-    unique_recoger = df_filt[recogida_col].astype(str).str.strip().replace(["nan", ""], pd.NA).dropna().unique().tolist()
-    unique_recoger = [u for u in unique_recoger if u and len(u) > 5]
-    to_geocode = [a for a in unique_recoger if a not in cache][:GEOCODE_MAX_PER_RUN]
-    if not to_geocode:
-        return cache
-    progress = st.progress(0.0, text="Geocodificando direcciones en el mapa...")
-    n = len(to_geocode)
-    for i, addr in enumerate(to_geocode):
-        result = _geocode_one(addr)
-        if result:
-            cache[addr] = result
-        progress.progress((i + 1) / n, text=f"Geocodificando direcciones... {i + 1}/{n}")
-        time.sleep(GEOCODE_DELAY_SEC)
-    progress.empty()
-    return cache
-
-
-def _apply_geocode_to_df(df_filt: pd.DataFrame, recogida_col: str, cache: dict) -> None:
-    """Sobrescribe _lat, _lon en df_filt con las coordenadas geocodificadas cuando la dirección está en cache."""
-    if "_lat" not in df_filt.columns or "_lon" not in df_filt.columns:
-        return
-    recoger_series = df_filt[recogida_col].astype(str).str.strip()
-    for addr, (lat, lon) in cache.items():
-        mask = (recoger_series == addr)
-        if mask.any():
-            df_filt.loc[mask, "_lat"] = lat
-            df_filt.loc[mask, "_lon"] = lon
+        return None
 
 
 def _read_csv_auto_encoding(source, path: Optional[Path] = None) -> pd.DataFrame:
@@ -373,6 +326,23 @@ def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Op
         )
     else:
         df["_es_hotel"] = False
+
+    # Opcional: pocas direcciones con coordenadas fijas (sin geocodificar). Si Recoger contiene el texto, se usa esa lat/lon en el mapa.
+    dir_coords = load_direcciones_mapping()
+    if recogida_col and dir_coords is not None and not dir_coords.empty and "_lat" in df.columns:
+        texto_recogida = df[recogida_col].astype(str).str.lower()
+        for _, dr in dir_coords.iterrows():
+            texto = (dr.get("texto") or "").strip().lower()
+            if not texto or pd.isna(dr.get("lat")) or pd.isna(dr.get("lon")):
+                continue
+            try:
+                lat_d, lon_d = float(dr["lat"]), float(dr["lon"])
+            except (TypeError, ValueError):
+                continue
+            mask = texto_recogida.str.contains(re.escape(texto), na=False)
+            if mask.any():
+                df.loc[mask, "_lat"] = lat_d
+                df.loc[mask, "_lon"] = lon_d
 
     return df
 
@@ -586,21 +556,6 @@ def main():
             df_filt = df_filt[~df_filt["_es_hotel"]]
     if "_cliente_canonical" in df_filt.columns and clientes_sel:
         df_filt = df_filt[df_filt["_cliente_canonical"].isin(clientes_sel)]
-
-    # Coordenadas dinámicas por dirección: geocodificar Recoger (Nominatim/OSM) para el mapa; la clasificación sigue por Zona
-    recogida_col = find_column(df, RECOGIDA_COLS)
-    if (
-        recogida_col
-        and recogida_col in df_filt.columns
-        and GEOPY_AVAILABLE
-        and not df_filt.empty
-        and "_lat" in df_filt.columns
-    ):
-        cache = _ensure_geocode_cache(df_filt, recogida_col)
-        df_filt = df_filt.copy()
-        _apply_geocode_to_df(df_filt, recogida_col, cache)
-    elif recogida_col and not GEOPY_AVAILABLE:
-        st.sidebar.caption("Instala **geopy** para que el mapa use coordenadas por dirección: `pip install geopy`")
 
     # Resumen: servicios y desglose completados/cancelados
     n_vista = len(df_filt)

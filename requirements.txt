@@ -3,4 +3,3 @@ pandas>=2.0.0
 folium>=0.15.0
 streamlit-folium>=0.15.0
 pyarrow>=14.0.0
-geopy>=2.4.0

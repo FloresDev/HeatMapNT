@@ -34,6 +34,10 @@ Si el CSV **no tiene lat/lon** pero sí **Zona** (código de zona), el mapa usa 
 
 En este caso hace falta el archivo **`data/zonas_coordenadas.csv`** con columnas `zona`, `lat`, `lon` (y opcional `nombre`). Ahí están ya ALC, APC2, MOS y otras zonas del área Madrid; puedes añadir filas para nuevos códigos de zona.
 
+### Opcional: fijar unas pocas direcciones en el mapa
+
+Si quieres que **una dirección concreta** (p. ej. "Conde de los Gaitanes") salga en su sitio en el mapa en lugar de en la zona genérica, puedes usar **`data/direcciones_coordenadas.csv`** con columnas `texto`, `lat`, `lon`, `nombre`. Si la columna **Recoger** del CSV contiene ese `texto`, se usan esas coordenadas. Sirve para 5–10 direcciones que añadas a mano; no hace falta geocodificar miles de registros.
+
 ## Dónde ejecutarlo
 
 ### 1. En tu ordenador (recomendado para empezar)
