@@ -4,23 +4,23 @@ ALCOR,40.349,-3.824,Alcorcón
 APC1,40.482,-3.364,Alcalá de Henares
 APC1B,40.482,-3.364,Alcalá de Henares B
 APC2,40.4817,-3.3635,Alcalá de Henares
-APC6,40.659,-4.008,Collado Villalba
+APC6,40.643,-3.993,Collado Villalba
 BAR,40.473,-3.567,Barajas
 MAD,40.4168,-3.7038,Madrid Centro
 MOS,40.3223,-3.8644,Móstoles
 TOR,40.4615,-3.4975,Torrejón de Ardoz
-SSR,40.4081,-3.6263,San Sebastián de los Reyes
+SSR,40.5474,-3.6261,San Sebastián de los Reyes
 COB,40.5472,-3.6414,Alcobendas
 GET,40.305,-3.732,Getafe
 LEG,40.326,-3.764,Leganés
-VILL,40.659,-4.008,Collado Villalba
+VILL,40.643,-3.993,Collado Villalba
 ATO,40.407,-3.691,Atocha
 E.ATO,40.407,-3.691,Atocha Este
 CHA1,40.46,-3.68,Chamartín
 CHA2,40.46,-3.68,Chamartín 2
 CHAMB,40.46,-3.68,Chamartín
 E.CHA,40.46,-3.68,Chamartín Este
-T4,40.493,-3.567,Barajas T4
+T4,40.4915,-3.5917,Barajas T4
 CNT,40.417,-3.704,Centro
 M30 E,40.42,-3.65,M30 Este
 M30 N,40.46,-3.69,M30 Norte
@@ -34,9 +34,9 @@ M40 S,40.32,-3.72,M40 Sur
 4VI,40.42,-3.70,Madrid
 607,40.42,-3.70,Madrid
 A1,40.42,-3.70,Madrid
-ALG,40.42,-3.70,Madrid
+ALG,40.5965,-3.5016,Algete
 AML,40.42,-3.70,Madrid
-ANB,40.42,-3.70,Madrid
+ANB,40.545,-3.638,Anabel
 ARA,40.42,-3.70,Madrid
 ARG,40.42,-3.70,Madrid
 ARGA,40.42,-3.70,Madrid
@@ -51,19 +51,19 @@ CPOZ,40.42,-3.70,Madrid
 CRB,40.42,-3.70,Madrid
 CVI,40.42,-3.70,Madrid
 DGZ,40.42,-3.70,Madrid
-DIV,40.42,-3.70,Madrid
+DIV,40.543,-3.6395,Diversia
 E.SUR,40.38,-3.70,Madrid Sur
 FCM,40.42,-3.70,Madrid
 FDT,40.42,-3.70,Madrid
 FSAZ,40.42,-3.70,Madrid
-FUE,40.42,-3.70,Fuenlabrada
+FUE,40.289,-3.798,Fuenlabrada
 HDM,40.42,-3.70,Madrid
 HORT,40.42,-3.70,Madrid
 IFE,40.42,-3.70,Madrid
 LAT,40.42,-3.70,Madrid
-LMO,40.42,-3.70,Madrid
+LMO,40.515,-3.651,La Moraleja
 LRZ,40.42,-3.70,Madrid
-LTB,40.42,-3.70,Madrid
+LTB,40.504,-3.672,Las Tablas
 M11,40.42,-3.70,Madrid
 M12,40.42,-3.70,Madrid
 MJH,40.42,-3.70,Madrid
@@ -78,16 +78,16 @@ PVA,40.42,-3.70,Madrid
 RIV,40.42,-3.70,Madrid
 SAG,40.42,-3.70,Madrid
 SAL,40.42,-3.70,Madrid
-SAN,40.42,-3.70,Madrid
+SAN,40.5474,-3.6261,San Sebastián de los Reyes
 SBL,40.42,-3.70,Madrid
-SCH,40.42,-3.70,Madrid
+SCH,40.498,-3.673,San Chinarro
 SFE,40.42,-3.70,Madrid
 T123,40.42,-3.70,Madrid
 TET,40.42,-3.70,Madrid
 TLD,40.42,-3.70,Madrid
 TVEL,40.42,-3.70,Madrid
 UNI,40.42,-3.70,Madrid
-URBA,40.42,-3.70,Madrid
+URBA,40.548,-3.628,Urbanizaciones
 USE,40.42,-3.70,Madrid
 VAL,40.42,-3.70,Madrid
 VALD,40.42,-3.70,Madrid

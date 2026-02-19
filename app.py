@@ -44,6 +44,10 @@ CANCELLED_STATUS_VALUES = {"cancelled", "canceled", "cancelado", "cancelada", "c
 ZONAS_MAS_FINO = {"ALC", "ANB", "DIV", "URBA", "ALG", "SAN", "SSR", "LMO", "LTB", "SCH"}
 # Columna cliente/cuenta para filtrar por cliente
 CLIENTE_COLS = ["Cuenta", "Cliente", "Código de Cuenta", "Cliente de cuenta"]
+# Columna ID de servicio (para búsqueda y detalle)
+ID_COLS = ["ID", "Id", "Número", "Nº", "Nº Servicio", "Servicio", "Job", "No", "Nº de servicio"]
+# Columna nombre (pasajero/cliente) para búsqueda
+NOMBRE_COLS = ["Nombre", "nombre", "Name", "Cliente nombre", "Pasajero", "Pasajero nombre"]
 # Columna de dirección de recogida (para clasificar Hoteles vs Particulares por la dirección)
 RECOGIDA_COLS = ["Recoger", "Dirección", "Dirección de recogida", "Pickup", "Recoger en", "Origen"]
 # Palabras que identifican recogida en hotel (la dirección de recogida contiene alguna)
@@ -270,6 +274,18 @@ def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Op
     if "_zona" in df.columns:
         df["_zona"] = df["_zona"].astype(str).str.strip().str.upper().str.replace("NAN", "", regex=False)
 
+    # --- ID de servicio (para detalle y búsqueda) ---
+    id_col = find_column(df, ID_COLS)
+    if id_col:
+        df["_id"] = df[id_col].astype(str).str.strip()
+    else:
+        df["_id"] = df.index.astype(str)  # fallback: índice como identificador
+    # --- Nombre (pasajero/cliente) para búsqueda ---
+    nombre_col = find_column(df, NOMBRE_COLS)
+    if nombre_col:
+        df["_nombre"] = df[nombre_col].astype(str).str.strip().replace(["nan", "None"], "")
+    else:
+        df["_nombre"] = ""
     # --- Cliente / cuenta: estandarización ---
     cliente_col = find_column(df, CLIENTE_COLS)
     if cliente_col:
@@ -278,6 +294,12 @@ def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Op
         df["_cliente_canonical"] = df["_cliente_raw"].apply(
             lambda x: norm_to_canonical.get(_normalize_cliente(x), x) if x else ""
         )
+        # "Con cuenta" = filas donde la columna Cuenta viene informada
+        df["_tiene_cuenta"] = (df["_cliente_raw"] != "") & (df["_cliente_raw"].notna())
+    else:
+        df["_cliente_raw"] = ""
+        df["_cliente_canonical"] = ""
+        df["_tiene_cuenta"] = False
     # --- Hoteles: por dirección de recogida (ej. Eurostars Congress, Hotel NH...) ---
     recogida_col = find_column(df, RECOGIDA_COLS)
     if recogida_col:
@@ -299,11 +321,11 @@ def build_heatmap_data(df: pd.DataFrame) -> list:
         w = float(row["_weight"])
         zona = (row.get("_zona") or "").strip().upper()
         if zona in ZONAS_MAS_FINO:
-            # Jitter determinista (± ~0.006°) para repartir el calor en la zona
+            # Jitter determinista (± ~0.012°) para repartir el calor y que se vea bien cada zona (Alcobendas, Sanse, etc.)
             h = hash((i, "lat")) % 2000
-            lat += (h - 1000) / 150000.0
+            lat += (h - 1000) / 80000.0
             h = hash((i, "lon")) % 2000
-            lon += (h - 1000) / 150000.0
+            lon += (h - 1000) / 80000.0
         out.append([lat, lon, w])
     return out
 
@@ -422,38 +444,50 @@ def main():
             horizontal=False,
         )
 
-    # Filtro por cliente/cuenta: tipo (Hoteles / Particulares) y campo con desplegable de coincidencias
+    # Filtro por cliente/cuenta: tipo (Con cuenta / Hoteles / Particulares) y búsqueda por Cuenta y Nombre
     tipo_cliente = "todos"
     clientes_sel: List[str] = []
     if "_cliente_canonical" in df.columns:
         st.sidebar.subheader("Cliente / cuenta")
         tipo_cliente = st.sidebar.radio(
             "Tipo de cliente",
-            options=["todos", "hoteles", "particulares"],
-            format_func=lambda x: {"todos": "Todos", "hoteles": "Hoteles", "particulares": "Particulares"}[x],
+            options=["todos", "cuenta", "hoteles", "particulares"],
+            format_func=lambda x: {
+                "todos": "Todos",
+                "cuenta": "Con cuenta (cuenta informada)",
+                "hoteles": "Hoteles",
+                "particulares": "Particulares",
+            }[x],
             index=0,
-            horizontal=True,
+            horizontal=False,
         )
-        with st.sidebar.expander("¿Cómo se clasifica Hoteles / Particulares?"):
+        with st.sidebar.expander("¿Cómo se clasifica?"):
             st.caption(
-                "**Hoteles:** servicios cuya **dirección de recogida** (columna Recoger / Dirección) contiene palabras como: "
-                "hotel, eurostars, congress, hilton, nh, meliá, barceló, ibis, resort, hostal, palace, marriott, etc. "
-                "**Particulares:** el resto (recogidas en domicilio, empresa, etc.)."
+                "**Con cuenta:** servicios con la columna **Cuenta** informada. "
+                "**Hoteles:** dirección de recogida (Recoger) contiene hotel, eurostars, congress, hilton, nh, meliá, etc. "
+                "**Particulares:** el resto (domicilio, empresa, etc.)."
             )
-        unique_clientes = sorted(df["_cliente_canonical"].dropna().astype(str).replace("", pd.NA).dropna().unique().tolist())
+        unique_clientes = sorted(
+            df["_cliente_canonical"].dropna().astype(str).replace("", pd.NA).dropna().unique().tolist()
+        )
         unique_clientes = [c for c in unique_clientes if c and str(c).strip()]
-        # Campo de texto: al escribir se filtran las opciones del desplegable
         busqueda_cliente = st.sidebar.text_input(
-            "Cliente",
-            placeholder="Escribe para ver coincidencias en el desplegable...",
+            "Cliente (busca por Cuenta o Nombre)",
+            placeholder="Escribe para ver coincidencias...",
             key="busca_cliente",
         )
         busq = (busqueda_cliente or "").strip().lower()
         if busq:
-            coincidencias = [c for c in unique_clientes if busq in c.lower()][:150]
+            # Coincidencias por Cuenta (canonical) o por Nombre
+            if "_nombre" in df.columns:
+                mask_cuenta = df["_cliente_canonical"].astype(str).str.lower().str.contains(re.escape(busq), na=False)
+                mask_nombre = df["_nombre"].astype(str).str.lower().str.contains(re.escape(busq), na=False)
+                clientes_con_busq = set(df.loc[mask_cuenta | mask_nombre, "_cliente_canonical"].dropna().astype(str))
+                coincidencias = sorted([c for c in unique_clientes if c in clientes_con_busq])[:150]
+            else:
+                coincidencias = [c for c in unique_clientes if busq in c.lower()][:150]
         else:
             coincidencias = unique_clientes[:150]
-        # Desplegable que muestra solo las coincidencias al escribir en el campo de arriba
         clientes_sel = st.sidebar.multiselect(
             "Coincidencias (elige uno o más)",
             options=coincidencias,
@@ -479,6 +513,8 @@ def main():
             df_filt = df_filt[~df_filt["_cancelado"]]
         elif filtro_estado == "solo_cancelados":
             df_filt = df_filt[df_filt["_cancelado"]]
+    if "_tiene_cuenta" in df_filt.columns and tipo_cliente == "cuenta":
+        df_filt = df_filt[df_filt["_tiene_cuenta"]]
     if "_es_hotel" in df_filt.columns:
         if tipo_cliente == "hoteles":
             df_filt = df_filt[df_filt["_es_hotel"]]
@@ -496,8 +532,8 @@ def main():
         st.sidebar.caption(f"↳ {_fmt_entero(n_compl)} completados, {_fmt_entero(n_canc)} cancelados")
     st.sidebar.metric("Puntos en mapa", len(df_filt))
 
-    # Tabs: Mapa | Comparativa
-    tab_mapa, tab_comparativa = st.tabs(["Mapa de calor", "Comparativa entre días"])
+    # Tabs: Mapa | Comparativa | Detalle servicio
+    tab_mapa, tab_comparativa, tab_detalle = st.tabs(["Mapa de calor", "Comparativa entre días", "Detalle de servicio"])
 
     with tab_mapa:
         if df_filt.empty:
@@ -566,6 +602,32 @@ def main():
                 comp["Diferencia"] = comp["Día B"] - comp["Día A"]
                 comp_show = comp.fillna(0).round(0).astype(int)
                 st.dataframe(comp_show.sort_values("Día B", ascending=False), use_container_width=True)
+
+    with tab_detalle:
+        st.subheader("Buscar y ver detalle de un servicio")
+        busca_id = st.text_input(
+            "Buscar por ID (o parte del ID)",
+            placeholder="Escribe el ID del servicio o parte de él...",
+            key="busca_id_servicio",
+        )
+        if busca_id and busca_id.strip():
+            id_busq = busca_id.strip()
+            # Buscar en datos cargados (independiente de filtros del mapa)
+            mask = df["_id"].astype(str).str.contains(re.escape(id_busq), case=False, na=False)
+            detalle_df = df.loc[mask]
+            if detalle_df.empty:
+                st.info("No se encontró ningún servicio con ese ID.")
+            else:
+                n = len(detalle_df)
+                st.caption(f"Se encontraron **{n}** servicio(s).")
+                # Mostrar columnas originales del CSV + _lat, _lon, _zona, _fecha_str si existen
+                cols_orig = [c for c in df.columns if not c.startswith("_")]
+                cols_extra = [c for c in ["_id", "_fecha_str", "_zona", "_lat", "_lon", "_cliente_canonical", "_nombre", "_cancelado"] if c in detalle_df.columns]
+                cols_show = ["_id"] + cols_orig + [c for c in cols_extra if c not in cols_orig and c != "_id"]
+                cols_show = [c for c in cols_show if c in detalle_df.columns]
+                st.dataframe(detalle_df[cols_show], use_container_width=True)
+        else:
+            st.caption("Escribe un ID (o parte) para ver el detalle del servicio. Se buscan coincidencias en la columna ID del CSV.")
 
 
 if __name__ == "__main__":
