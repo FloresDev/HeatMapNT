@@ -2,6 +2,7 @@
 Mapa de calor de servicios de taxi.
 Filtros por día/mes y comparativa entre días.
 """
+import re
 import streamlit as st
 import pandas as pd
 import folium
@@ -39,6 +40,43 @@ ZONAS_FILE = DATA_DIR / "zonas_coordenadas.csv"
 
 # Valores que consideramos "cancelado" en columna estado (case-insensitive)
 CANCELLED_STATUS_VALUES = {"cancelled", "canceled", "cancelado", "cancelada", "cancelled by", "no show", "no-show"}
+# Zonas con mapa de calor más fino (jitter para repartir el calor)
+ZONAS_MAS_FINO = {"ALC", "ANB", "DIV", "URBA", "ALG", "SAN", "SSR", "LMO", "LTB", "SCH"}
+# Columna cliente/cuenta para filtrar por cliente
+CLIENTE_COLS = ["Cuenta", "Cliente", "Código de Cuenta", "Cliente de cuenta"]
+# Palabras que identifican cuentas de hoteles (para filtro Hoteles vs Particulares)
+HOTEL_KEYWORDS = ("hotel", "hotels", "hilton", "nh ", "nh,", "melia", "meliá", "barceló", "barcelo", "ibis", "ac hotels", "state", "resort", "hostal", "hostel", "albergue", "palace", "marriott", "radisson", "tryp", "silken", "eurostars")
+
+
+def _normalize_cliente(s: str) -> str:
+    """Clave normalizada para agrupar nombres muy parecidos."""
+    if pd.isna(s) or not isinstance(s, str):
+        return ""
+    return " ".join(s.strip().lower().split())
+
+
+def _build_canonical_client_map(series: pd.Series) -> dict:
+    """Mapeo clave_normalizada -> nombre canónico (el más frecuente del grupo)."""
+    s = series.astype(str).str.strip().replace(["nan", "None"], "")
+    s = s[s != ""]
+    if s.empty:
+        return {}
+    norm_to_originals: dict = {}
+    for v in s.unique():
+        if not v:
+            continue
+        key = _normalize_cliente(v)
+        if not key:
+            continue
+        if key not in norm_to_originals:
+            norm_to_originals[key] = []
+        norm_to_originals[key].append(v)
+    vc = s.value_counts()
+    norm_to_canonical = {}
+    for key, originals in norm_to_originals.items():
+        best = max(originals, key=lambda x: vc.get(x, 0))
+        norm_to_canonical[key] = best
+    return norm_to_canonical
 
 
 def _fmt_fecha(s: str) -> str:
@@ -226,12 +264,36 @@ def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Op
     if "_zona" in df.columns:
         df["_zona"] = df["_zona"].astype(str).str.strip().str.upper().str.replace("NAN", "", regex=False)
 
+    # --- Cliente / cuenta: estandarización y tipo (hotel vs particular) ---
+    cliente_col = find_column(df, CLIENTE_COLS)
+    if cliente_col:
+        df["_cliente_raw"] = df[cliente_col].astype(str).str.strip().replace(["nan", "None"], "")
+        norm_to_canonical = _build_canonical_client_map(df["_cliente_raw"])
+        df["_cliente_canonical"] = df["_cliente_raw"].apply(
+            lambda x: norm_to_canonical.get(_normalize_cliente(x), x) if x else ""
+        )
+        df["_es_hotel"] = df["_cliente_canonical"].str.lower().str.contains(
+            "|".join(re.escape(k) for k in HOTEL_KEYWORDS), na=False, regex=True
+        )
+
     return df
 
 
 def build_heatmap_data(df: pd.DataFrame) -> list:
-    """Convierte el DataFrame a lista [lat, lon, weight] para HeatMap."""
-    return df[["_lat", "_lon", "_weight"]].values.tolist()
+    """Convierte el DataFrame a lista [lat, lon, weight] para HeatMap. En ZONAS_MAS_FINO aplica jitter para calor más fino."""
+    out = []
+    for i, row in df.iterrows():
+        lat, lon = float(row["_lat"]), float(row["_lon"])
+        w = float(row["_weight"])
+        zona = (row.get("_zona") or "").strip().upper()
+        if zona in ZONAS_MAS_FINO:
+            # Jitter determinista (± ~0.006°) para repartir el calor en la zona
+            h = hash((i, "lat")) % 2000
+            lat += (h - 1000) / 150000.0
+            h = hash((i, "lon")) % 2000
+            lon += (h - 1000) / 150000.0
+        out.append([lat, lon, w])
+    return out
 
 
 def create_heatmap(df: pd.DataFrame, center_lat: float = 40.42, center_lon: float = -3.70, zoom: int = 12) -> folium.Map:
@@ -325,21 +387,14 @@ def main():
     meses = st.sidebar.multiselect("Meses (vacío = todos)", options=list(range(1, 13)), format_func=lambda x: MESES_ES[x - 1], placeholder="Elegir meses")
     días_semana = st.sidebar.multiselect("Días de la semana", options=list(range(7)), format_func=lambda x: ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][x], placeholder="Elegir días")
 
-    # Tramos horarios: (etiqueta, hora_min, hora_max inclusive)
-    TRAMOS_HORARIOS = [
-        ("Todos", None, None),
-        ("Madrugada (00:00-05:59)", 0, 5),
-        ("Mañana (06:00-11:59)", 6, 11),
-        ("Mediodía (12:00-17:59)", 12, 17),
-        ("Tarde/Noche (18:00-23:59)", 18, 23),
-    ]
-    tramo_sel = st.sidebar.selectbox(
-        "Tramo horario",
-        options=list(range(len(TRAMOS_HORARIOS))),
-        format_func=lambda i: TRAMOS_HORARIOS[i][0],
-        index=0,
+    # Filtro por hora: tramos de 1 hora (00:00-01:00, 01:00-02:00, ...)
+    HORAS_ETIQUETAS = [f"{h:02d}:00-{h+1:02d}:00" if h < 23 else "23:00-24:00" for h in range(24)]
+    horas_sel = st.sidebar.multiselect(
+        "Tramo horario (vacío = todas las horas)",
+        options=list(range(24)),
+        format_func=lambda h: HORAS_ETIQUETAS[h],
+        placeholder="Elegir horas (ej. 00:00-01:00)",
     )
-    tramo = TRAMOS_HORARIOS[tramo_sel]
 
     # Filtro por estado: incluir todos por defecto; poder filtrar por completados/cancelados
     filtro_estado = "todos"  # todos | solo_completados | solo_cancelados
@@ -355,6 +410,35 @@ def main():
             horizontal=False,
         )
 
+    # Filtro por cliente/cuenta: tipo (Hoteles / Particulares) y búsqueda con autocompletado
+    tipo_cliente = "todos"
+    clientes_sel: List[str] = []
+    if "_cliente_canonical" in df.columns:
+        st.sidebar.subheader("Cliente / cuenta")
+        tipo_cliente = st.sidebar.radio(
+            "Tipo de cliente",
+            options=["todos", "hoteles", "particulares"],
+            format_func=lambda x: {"todos": "Todos", "hoteles": "Hoteles", "particulares": "Particulares"}[x],
+            index=0,
+            horizontal=True,
+        )
+        unique_clientes = sorted(df["_cliente_canonical"].dropna().astype(str).replace("", pd.NA).dropna().unique().tolist())
+        unique_clientes = [c for c in unique_clientes if c and str(c).strip()]
+        busqueda_cliente = st.sidebar.text_input("Buscar cliente", placeholder="Escribe para filtrar la lista...", key="busca_cliente")
+        if busqueda_cliente:
+            busq = busqueda_cliente.strip().lower()
+            opciones_cliente = [c for c in unique_clientes if busq in c.lower()][:200]
+        else:
+            opciones_cliente = unique_clientes[:200]
+        if len(unique_clientes) > 200 and not busqueda_cliente:
+            st.sidebar.caption("Escribe en 'Buscar cliente' para acotar la lista.")
+        clientes_sel = st.sidebar.multiselect(
+            "Filtrar por cliente (vacío = todos)",
+            options=opciones_cliente,
+            default=[],
+            placeholder="Elegir uno o más clientes" if opciones_cliente else "Escribe en 'Buscar cliente' para ver opciones",
+        )
+
     df_filt = df[
         (df["_fecha"].dt.date >= fecha_min) &
         (df["_fecha"].dt.date <= fecha_max)
@@ -363,13 +447,20 @@ def main():
         df_filt = df_filt[df_filt["_mes"].isin(meses)]
     if días_semana:
         df_filt = df_filt[df_filt["_día_semana"].isin(días_semana)]
-    if tramo[1] is not None and tramo[2] is not None:
-        df_filt = df_filt[(df_filt["_hora"] >= tramo[1]) & (df_filt["_hora"] <= tramo[2])]
+    if horas_sel:
+        df_filt = df_filt[df_filt["_hora"].isin(horas_sel)]
     if "_cancelado" in df_filt.columns:
         if filtro_estado == "solo_completados":
             df_filt = df_filt[~df_filt["_cancelado"]]
         elif filtro_estado == "solo_cancelados":
             df_filt = df_filt[df_filt["_cancelado"]]
+    if "_es_hotel" in df_filt.columns:
+        if tipo_cliente == "hoteles":
+            df_filt = df_filt[df_filt["_es_hotel"]]
+        elif tipo_cliente == "particulares":
+            df_filt = df_filt[~df_filt["_es_hotel"]]
+    if "_cliente_canonical" in df_filt.columns and clientes_sel:
+        df_filt = df_filt[df_filt["_cliente_canonical"].isin(clientes_sel)]
 
     # Resumen: servicios y desglose completados/cancelados
     n_vista = len(df_filt)
