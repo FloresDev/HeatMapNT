@@ -1,7 +1,6 @@
 """
 Mapa de calor de servicios de taxi.
-Filtros por día/mes y comparativa entre días.
-Coordenadas en el mapa: por Zona (zonas_coordenadas.csv). Opcional: data/direcciones_coordenadas.csv con pocas direcciones (texto, lat, lon) para fijar puntos concretos sin geocodificar.
+Coordenadas en el mapa: por Zona (zonas_coordenadas.csv). Opcional: data/direcciones_coordenadas.csv con pocas direcciones (texto, lat, lon) para fijar puntos concretos.
 """
 import re
 import streamlit as st
@@ -578,18 +577,34 @@ def main():
                 st.caption(f"Servicios en el mapa: **{_fmt_entero(nc)}** completados, **{_fmt_entero(nk)}** cancelados")
             m = create_heatmap(df_filt)
             st_folium(m, use_container_width=True, height=500)
-            # Resumen por zona si existe
+            # Ranking por zona (identificador de zona como clave principal)
             zone_col = find_column(df, ZONE_COLS)
             if zone_col and "_zona" in df_filt.columns and df_filt["_zona"].astype(str).str.len().gt(0).any():
-                st.subheader("Llamadas por zona (filtrado)")
+                st.subheader("Ranking de zonas (filtrado, por identificador)")
+                zonas_df = load_zonas_mapping()
+                col_z = "zona" if zonas_df is not None and "zona" in zonas_df.columns else None
+                nombre_col = "nombre" if zonas_df is not None and "nombre" in zonas_df.columns else None
+                code_to_name = {}
+                if zonas_df is not None and col_z and nombre_col:
+                    code_to_name = zonas_df.set_index(col_z)[nombre_col].to_dict()
                 por_zona = df_filt.groupby("_zona", dropna=False).size().sort_values(ascending=False)
+                # Gráfico: directamente por identificador de zona
                 st.bar_chart(por_zona)
+                # Tabla ranking: identificador + nombre (si existe)
+                ranking_df = pd.DataFrame(
+                    {
+                        "Servicios": por_zona.values,
+                        "Zona (nombre)": [code_to_name.get(c, "") for c in por_zona.index],
+                    },
+                    index=por_zona.index.astype(str),
+                )
+                ranking_df.index.name = "Código"
                 if "_cancelado" in df_filt.columns:
-                    st.caption("Desglose por zona (completados / cancelados):")
                     por_zona_estado = df_filt.groupby(["_zona", "_cancelado"], dropna=False).size().unstack(fill_value=0)
                     por_zona_estado = por_zona_estado.rename(columns={False: "Completados", True: "Cancelados"}, errors="ignore")
-                    por_zona_estado = por_zona_estado.sort_values(por_zona_estado.columns[0], ascending=False)
-                    st.dataframe(por_zona_estado.astype(int), use_container_width=True)
+                    if "Completados" in por_zona_estado.columns:
+                        ranking_df["Completados"] = ranking_df.index.map(por_zona_estado["Completados"]).fillna(0).astype(int)
+                    if "Cancelados" in por_zona_estado.columns:
 
     with tab_comparativa:
         fechas_únicas = sorted(df_filt["_fecha_str"].unique())
@@ -630,12 +645,16 @@ def main():
             zone_col = find_column(df, ZONE_COLS)
             if zone_col and "_zona" in df_filt.columns and df_filt["_zona"].astype(str).str.len().gt(0).any():
                 st.subheader("Comparativa por zona")
+                zonas_df = load_zonas_mapping()
+                col_z = "zona" if zonas_df is not None and "zona" in zonas_df.columns else None
+                code_to_name_comp = (zonas_df.set_index(col_z)["nombre"].to_dict() if zonas_df is not None and col_z and "nombre" in zonas_df.columns else {})
                 za = df_a.groupby("_zona", dropna=False).size()
                 zb = df_b.groupby("_zona", dropna=False).size()
                 comp = pd.DataFrame({"Día A": za, "Día B": zb}).fillna(0)
                 comp["Diferencia"] = comp["Día B"] - comp["Día A"]
                 comp_show = comp.fillna(0).round(0).astype(int)
-                st.dataframe(comp_show.sort_values("Día B", ascending=False), use_container_width=True)
+                comp_show.insert(0, "Zona (nombre)", comp_show.index.map(lambda c: code_to_name_comp.get(c, c)))
+                st.dataframe(comp_show.sort_values("Día B", ascending=False), use_container_width=True, hide_index=True)
 
     with tab_detalle:
         st.subheader("Buscar y ver detalle de un servicio")

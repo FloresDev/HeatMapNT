@@ -5,4 +5,5 @@ __pycache__/
 *.csv
 !data/zonas_coordenadas.csv
 !data/servicios_taxi_ejemplo.csv
+!data/direcciones_coordenadas.csv
 .DS_Store
