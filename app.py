@@ -45,7 +45,8 @@ ZONAS_MAS_FINO = {"ALC", "ANB", "DIV", "URBA", "ALG", "SAN", "SSR", "LMO", "LTB"
 # Columna cliente/cuenta para filtrar por cliente
 CLIENTE_COLS = ["Cuenta", "Cliente", "Código de Cuenta", "Cliente de cuenta"]
 # Columna ID de servicio (para búsqueda y detalle)
-ID_COLS = ["ID", "Id", "Número", "Nº", "Nº Servicio", "Servicio", "Job", "No", "Nº de servicio"]
+# Para tus reportes usaremos exclusivamente **ID Reserva**.
+ID_COLS = ["ID Reserva"]
 # Columna nombre (pasajero/cliente) para búsqueda
 NOMBRE_COLS = ["Nombre", "nombre", "Name", "Cliente nombre", "Pasajero", "Pasajero nombre"]
 # Columna de dirección de recogida (para clasificar Hoteles vs Particulares por la dirección)
@@ -605,6 +606,7 @@ def main():
                     if "Completados" in por_zona_estado.columns:
                         ranking_df["Completados"] = ranking_df.index.map(por_zona_estado["Completados"]).fillna(0).astype(int)
                     if "Cancelados" in por_zona_estado.columns:
+                        ranking_df["Cancelados"] = ranking_df.index.map(por_zona_estado["Cancelados"]).fillna(0).astype(int)
 
     with tab_comparativa:
         fechas_únicas = sorted(df_filt["_fecha_str"].unique())
