@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.csv
+!data/zonas_coordenadas.csv
+!data/servicios_taxi_ejemplo.csv
+.DS_Store
