@@ -44,8 +44,14 @@ CANCELLED_STATUS_VALUES = {"cancelled", "canceled", "cancelado", "cancelada", "c
 ZONAS_MAS_FINO = {"ALC", "ANB", "DIV", "URBA", "ALG", "SAN", "SSR", "LMO", "LTB", "SCH"}
 # Columna cliente/cuenta para filtrar por cliente
 CLIENTE_COLS = ["Cuenta", "Cliente", "Código de Cuenta", "Cliente de cuenta"]
-# Palabras que identifican cuentas de hoteles (para filtro Hoteles vs Particulares)
-HOTEL_KEYWORDS = ("hotel", "hotels", "hilton", "nh ", "nh,", "melia", "meliá", "barceló", "barcelo", "ibis", "ac hotels", "state", "resort", "hostal", "hostel", "albergue", "palace", "marriott", "radisson", "tryp", "silken", "eurostars")
+# Columna de dirección de recogida (para clasificar Hoteles vs Particulares por la dirección)
+RECOGIDA_COLS = ["Recoger", "Dirección", "Dirección de recogida", "Pickup", "Recoger en", "Origen"]
+# Palabras que identifican recogida en hotel (la dirección de recogida contiene alguna)
+HOTEL_KEYWORDS = (
+    "hotel", "hotels", "hilton", "nh ", "nh,", "nh hoteles", "melia", "meliá", "barceló", "barcelo",
+    "ibis", "ac hotels", "state", "resort", "hostal", "hostel", "albergue", "palace", "marriott",
+    "radisson", "tryp", "silken", "eurostars", "congress", "hosteler", "alojamiento", "aparthotel", "suite hotel",
+)
 
 
 def _normalize_cliente(s: str) -> str:
@@ -264,7 +270,7 @@ def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Op
     if "_zona" in df.columns:
         df["_zona"] = df["_zona"].astype(str).str.strip().str.upper().str.replace("NAN", "", regex=False)
 
-    # --- Cliente / cuenta: estandarización y tipo (hotel vs particular) ---
+    # --- Cliente / cuenta: estandarización ---
     cliente_col = find_column(df, CLIENTE_COLS)
     if cliente_col:
         df["_cliente_raw"] = df[cliente_col].astype(str).str.strip().replace(["nan", "None"], "")
@@ -272,9 +278,15 @@ def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Op
         df["_cliente_canonical"] = df["_cliente_raw"].apply(
             lambda x: norm_to_canonical.get(_normalize_cliente(x), x) if x else ""
         )
-        df["_es_hotel"] = df["_cliente_canonical"].str.lower().str.contains(
+    # --- Hoteles: por dirección de recogida (ej. Eurostars Congress, Hotel NH...) ---
+    recogida_col = find_column(df, RECOGIDA_COLS)
+    if recogida_col:
+        texto_recogida = df[recogida_col].astype(str).str.lower()
+        df["_es_hotel"] = texto_recogida.str.contains(
             "|".join(re.escape(k) for k in HOTEL_KEYWORDS), na=False, regex=True
         )
+    else:
+        df["_es_hotel"] = False
 
     return df
 
@@ -410,7 +422,7 @@ def main():
             horizontal=False,
         )
 
-    # Filtro por cliente/cuenta: tipo (Hoteles / Particulares) y búsqueda con autocompletado
+    # Filtro por cliente/cuenta: tipo (Hoteles / Particulares) y campo con desplegable de coincidencias
     tipo_cliente = "todos"
     clientes_sel: List[str] = []
     if "_cliente_canonical" in df.columns:
@@ -422,22 +434,35 @@ def main():
             index=0,
             horizontal=True,
         )
+        with st.sidebar.expander("¿Cómo se clasifica Hoteles / Particulares?"):
+            st.caption(
+                "**Hoteles:** servicios cuya **dirección de recogida** (columna Recoger / Dirección) contiene palabras como: "
+                "hotel, eurostars, congress, hilton, nh, meliá, barceló, ibis, resort, hostal, palace, marriott, etc. "
+                "**Particulares:** el resto (recogidas en domicilio, empresa, etc.)."
+            )
         unique_clientes = sorted(df["_cliente_canonical"].dropna().astype(str).replace("", pd.NA).dropna().unique().tolist())
         unique_clientes = [c for c in unique_clientes if c and str(c).strip()]
-        busqueda_cliente = st.sidebar.text_input("Buscar cliente", placeholder="Escribe para filtrar la lista...", key="busca_cliente")
-        if busqueda_cliente:
-            busq = busqueda_cliente.strip().lower()
-            opciones_cliente = [c for c in unique_clientes if busq in c.lower()][:200]
-        else:
-            opciones_cliente = unique_clientes[:200]
-        if len(unique_clientes) > 200 and not busqueda_cliente:
-            st.sidebar.caption("Escribe en 'Buscar cliente' para acotar la lista.")
-        clientes_sel = st.sidebar.multiselect(
-            "Filtrar por cliente (vacío = todos)",
-            options=opciones_cliente,
-            default=[],
-            placeholder="Elegir uno o más clientes" if opciones_cliente else "Escribe en 'Buscar cliente' para ver opciones",
+        # Campo de texto: al escribir se filtran las opciones del desplegable
+        busqueda_cliente = st.sidebar.text_input(
+            "Cliente",
+            placeholder="Escribe para ver coincidencias en el desplegable...",
+            key="busca_cliente",
         )
+        busq = (busqueda_cliente or "").strip().lower()
+        if busq:
+            coincidencias = [c for c in unique_clientes if busq in c.lower()][:150]
+        else:
+            coincidencias = unique_clientes[:150]
+        # Desplegable que muestra solo las coincidencias al escribir en el campo de arriba
+        clientes_sel = st.sidebar.multiselect(
+            "Coincidencias (elige uno o más)",
+            options=coincidencias,
+            default=[],
+            placeholder="Abre el desplegable y elige" if coincidencias else "Escribe arriba para ver coincidencias",
+            key="clientes_multiselect",
+        )
+        if not busq and len(unique_clientes) > 150:
+            st.sidebar.caption("Escribe en el campo Cliente para acotar la lista.")
 
     df_filt = df[
         (df["_fecha"].dt.date >= fecha_min) &
