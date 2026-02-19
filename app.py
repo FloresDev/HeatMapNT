@@ -10,6 +10,7 @@ from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 from pathlib import Path
 from typing import Optional, List
+import altair as alt
 
 # Configuración de página
 st.set_page_config(
@@ -618,17 +619,31 @@ def main():
                 if zonas_df is not None and col_z and nombre_col:
                     code_to_name = zonas_df.set_index(col_z)[nombre_col].to_dict()
                 por_zona = df_filt.groupby("_zona", dropna=False).size().sort_values(ascending=False)
-                # Gráfico: directamente por identificador de zona
-                st.bar_chart(por_zona)
-                # Tabla ranking: identificador + nombre (si existe)
+                # Datos para gráfico y tabla
                 ranking_df = pd.DataFrame(
                     {
-                        "Servicios": por_zona.values,
+                        "Código": por_zona.index.astype(str),
+                        "Servicios": por_zona.values.astype(int),
                         "Zona (nombre)": [code_to_name.get(c, "") for c in por_zona.index],
-                    },
-                    index=por_zona.index.astype(str),
+                    }
                 )
-                ranking_df.index.name = "Código"
+                # Gráfico: eje Y en enteros = número de servicios
+                chart = (
+                    alt.Chart(ranking_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Código:N", sort="-y", title="Zona"),
+                        y=alt.Y(
+                            "Servicios:Q",
+                            title="Servicios en la zona",
+                            axis=alt.Axis(format="d", tickMinStep=1),
+                        ),
+                        tooltip=["Código", "Zona (nombre)", "Servicios"],
+                    )
+                )
+                st.altair_chart(chart, use_container_width=True)
+                # Tabla ranking: identificador + nombre (si existe)
+                ranking_df = ranking_df.set_index("Código")
                 if "_cancelado" in df_filt.columns:
                     por_zona_estado = df_filt.groupby(["_zona", "_cancelado"], dropna=False).size().unstack(fill_value=0)
                     por_zona_estado = por_zona_estado.rename(columns={False: "Completados", True: "Cancelados"}, errors="ignore")
