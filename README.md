@@ -64,8 +64,15 @@ HeatMapNT/
     └── servicios_taxi_ejemplo.csv
 ```
 
+## Estandarización de datos
+
+- **Fechas**: se aceptan `Fecha / Hora` o `Fecha/Hora` en formato DD/MM/YYYY con hora (HH:MM o HH MM). Otras columnas de fecha/hora se detectan por nombre.
+- **Zona**: se normaliza a mayúsculas y sin espacios; solo se pintan en el mapa las filas cuya zona existe en `data/zonas_coordenadas.csv`.
+- **Servicios cancelados**: si el CSV tiene columna **Fuente** (p. ej. "Completed" / "Cancelled") o columnas como "Información de Cancelación", "Razon de Cancelación" o "Cancelled By", la app marca los cancelados y **por defecto los excluye** del mapa y de los totales. En el panel lateral puedes desmarcar "Excluir servicios cancelados" para incluirlos.
+- **Totales**: "Servicios en vista" y "Total servicios" son siempre el **número de viajes (filas)**, no la suma de pasajeros u otro peso.
+
 ## Notas
 
 - El mapa se centra por defecto en Madrid; con tus datos se verán las zonas donde tengas lat/lon o las zonas definidas en `zonas_coordenadas.csv`.
 - Si tu CSV usa otros nombres de columnas (en inglés, etc.), la app intenta detectarlos automáticamente.
-- **CSV Ouigo**: sube el archivo (ej. `ouigo_enero.csv`); la app reconoce `Fecha/Hora`, `Zona`, `Pasajeros`, etc. Asegúrate de tener `data/zonas_coordenadas.csv` con todos los códigos de zona que uses (ALC, APC2, MOS, etc.).
+- **CSV Ouigo / NORT**: sube el archivo; la app reconoce `Fecha / Hora`, `Zona`, `Fuente` (Completed/Cancelled), etc. Asegúrate de tener `data/zonas_coordenadas.csv` con todos los códigos de zona que uses (ALC, APC2, MOS, etc.).

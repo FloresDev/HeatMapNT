@@ -31,7 +31,14 @@ LAT_COLS = ["lat_recogida", "lat", "latitude", "pickup_lat", "start_lat"]
 LON_COLS = ["lon_recogida", "lon", "longitude", "pickup_lon", "start_lon"]
 ZONE_COLS = ["Zona", "zona", "zone", "borough", "district"]
 WEIGHT_COLS = ["Pasajeros", "Cantidad de cuenta", "cantidad", "count", "pasajeros", "weight"]
+# Estado del servicio: Fuente = "Completed" | "Cancelled" (reportes NORT/Autocab)
+STATUS_COLS = ["Fuente", "Estado", "Status", "State"]
+# Columnas que indican cancelación cuando tienen valor
+CANCEL_INFO_COLS = ["Información de Cancelación", "Razon de Cancelación", "Cancelled By", "Razón de Cancelación"]
 ZONAS_FILE = DATA_DIR / "zonas_coordenadas.csv"
+
+# Valores que consideramos "cancelado" en columna estado (case-insensitive)
+CANCELLED_STATUS_VALUES = {"cancelled", "canceled", "cancelado", "cancelada", "cancelled by", "no show", "no-show"}
 
 
 def _fmt_fecha(s: str) -> str:
@@ -107,7 +114,14 @@ def _read_csv_auto_encoding(source, path: Optional[Path] = None) -> pd.DataFrame
 
 
 def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Optional[pd.DataFrame]:
-    """Carga CSV y normaliza columnas para fecha, lat, lon (o zona) y peso. Soporta formato Ouigo/NORT."""
+    """
+    Carga CSV y estandariza datos. Soporta formato Ouigo/NORT/Autocab.
+    Estandarización:
+    - Fechas: columna Fecha/Hora o Fecha / Hora, formato DD/MM/YYYY HH:MM o HH MM.
+    - Zona: mayúsculas, sin espacios; sin zona en archivo → se descarta la fila.
+    - Cancelados: Fuente='Cancelled' o columnas Información/Razon/Cancelled By con valor → _cancelado=True.
+    - Servicios en vista = número de filas (viajes), no suma de Pasajeros.
+    """
     try:
         if uploaded_file is not None:
             df = _read_csv_auto_encoding(uploaded_file)
@@ -197,6 +211,21 @@ def load_and_prepare_data(uploaded_file=None, path: Optional[Path] = None) -> Op
     else:
         df["_weight"] = 1.0
 
+    # --- Estandarización: servicio cancelado o no ---
+    status_col = find_column(df, STATUS_COLS)
+    df["_cancelado"] = False
+    if status_col:
+        estado = df[status_col].astype(str).str.strip().str.lower()
+        df.loc[estado.isin(CANCELLED_STATUS_VALUES), "_cancelado"] = True
+    for col in CANCEL_INFO_COLS:
+        if col in df.columns:
+            tiene_info = df[col].astype(str).str.strip()
+            mask = (tiene_info != "") & (~tiene_info.isin(["nan", "None"]))
+            df.loc[mask, "_cancelado"] = True
+    # Normalización extra: zona como texto limpio
+    if "_zona" in df.columns:
+        df["_zona"] = df["_zona"].astype(str).str.strip().str.upper().str.replace("NAN", "", regex=False)
+
     return df
 
 
@@ -276,6 +305,7 @@ def main():
     df["_día_semana"] = df["_datetime"].dt.dayofweek  # 0=lunes, 6=domingo
     df["_día_semana_nombre"] = df["_datetime"].dt.day_name()
     df["_fecha_str"] = df["_datetime"].dt.date.astype(str)
+    df["_hora"] = df["_datetime"].dt.hour  # 0-23 para filtro por tramo horario
 
     min_date = df["_fecha"].min().date()
     max_date = df["_fecha"].max().date()
@@ -295,6 +325,36 @@ def main():
     meses = st.sidebar.multiselect("Meses (vacío = todos)", options=list(range(1, 13)), format_func=lambda x: MESES_ES[x - 1], placeholder="Elegir meses")
     días_semana = st.sidebar.multiselect("Días de la semana", options=list(range(7)), format_func=lambda x: ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][x], placeholder="Elegir días")
 
+    # Tramos horarios: (etiqueta, hora_min, hora_max inclusive)
+    TRAMOS_HORARIOS = [
+        ("Todos", None, None),
+        ("Madrugada (00:00-05:59)", 0, 5),
+        ("Mañana (06:00-11:59)", 6, 11),
+        ("Mediodía (12:00-17:59)", 12, 17),
+        ("Tarde/Noche (18:00-23:59)", 18, 23),
+    ]
+    tramo_sel = st.sidebar.selectbox(
+        "Tramo horario",
+        options=list(range(len(TRAMOS_HORARIOS))),
+        format_func=lambda i: TRAMOS_HORARIOS[i][0],
+        index=0,
+    )
+    tramo = TRAMOS_HORARIOS[tramo_sel]
+
+    # Filtro por estado: incluir todos por defecto; poder filtrar por completados/cancelados
+    filtro_estado = "todos"  # todos | solo_completados | solo_cancelados
+    if "_cancelado" in df.columns:
+        n_cancelados_tot = int(df["_cancelado"].sum())
+        n_completados_tot = len(df) - n_cancelados_tot
+        st.sidebar.caption(f"En el CSV: **{_fmt_entero(n_completados_tot)}** completados, **{_fmt_entero(n_cancelados_tot)}** cancelados")
+        filtro_estado = st.sidebar.radio(
+            "Mostrar servicios",
+            options=["todos", "solo_completados", "solo_cancelados"],
+            format_func=lambda x: {"todos": "Todos (completados + cancelados)", "solo_completados": "Solo completados", "solo_cancelados": "Solo cancelados"}[x],
+            index=0,
+            horizontal=False,
+        )
+
     df_filt = df[
         (df["_fecha"].dt.date >= fecha_min) &
         (df["_fecha"].dt.date <= fecha_max)
@@ -303,9 +363,21 @@ def main():
         df_filt = df_filt[df_filt["_mes"].isin(meses)]
     if días_semana:
         df_filt = df_filt[df_filt["_día_semana"].isin(días_semana)]
+    if tramo[1] is not None and tramo[2] is not None:
+        df_filt = df_filt[(df_filt["_hora"] >= tramo[1]) & (df_filt["_hora"] <= tramo[2])]
+    if "_cancelado" in df_filt.columns:
+        if filtro_estado == "solo_completados":
+            df_filt = df_filt[~df_filt["_cancelado"]]
+        elif filtro_estado == "solo_cancelados":
+            df_filt = df_filt[df_filt["_cancelado"]]
 
-    # Resumen (números enteros)
-    st.sidebar.metric("Servicios en vista", _fmt_entero(df_filt["_weight"].sum()))
+    # Resumen: servicios y desglose completados/cancelados
+    n_vista = len(df_filt)
+    st.sidebar.metric("Servicios en vista", _fmt_entero(n_vista))
+    if "_cancelado" in df_filt.columns and n_vista > 0:
+        n_compl = int((~df_filt["_cancelado"]).sum())
+        n_canc = int(df_filt["_cancelado"].sum())
+        st.sidebar.caption(f"↳ {_fmt_entero(n_compl)} completados, {_fmt_entero(n_canc)} cancelados")
     st.sidebar.metric("Puntos en mapa", len(df_filt))
 
     # Tabs: Mapa | Comparativa
@@ -315,14 +387,23 @@ def main():
         if df_filt.empty:
             st.warning("No hay datos con los filtros seleccionados.")
         else:
+            if "_cancelado" in df_filt.columns:
+                nc, nk = int((~df_filt["_cancelado"]).sum()), int(df_filt["_cancelado"].sum())
+                st.caption(f"Servicios en el mapa: **{_fmt_entero(nc)}** completados, **{_fmt_entero(nk)}** cancelados")
             m = create_heatmap(df_filt)
             st_folium(m, use_container_width=True, height=500)
             # Resumen por zona si existe
             zone_col = find_column(df, ZONE_COLS)
             if zone_col and "_zona" in df_filt.columns and df_filt["_zona"].astype(str).str.len().gt(0).any():
                 st.subheader("Llamadas por zona (filtrado)")
-                por_zona = df_filt.groupby("_zona", dropna=False)["_weight"].sum().sort_values(ascending=False)
+                por_zona = df_filt.groupby("_zona", dropna=False).size().sort_values(ascending=False)
                 st.bar_chart(por_zona)
+                if "_cancelado" in df_filt.columns:
+                    st.caption("Desglose por zona (completados / cancelados):")
+                    por_zona_estado = df_filt.groupby(["_zona", "_cancelado"], dropna=False).size().unstack(fill_value=0)
+                    por_zona_estado = por_zona_estado.rename(columns={False: "Completados", True: "Cancelados"}, errors="ignore")
+                    por_zona_estado = por_zona_estado.sort_values(por_zona_estado.columns[0], ascending=False)
+                    st.dataframe(por_zona_estado.astype(int), use_container_width=True)
 
     with tab_comparativa:
         fechas_únicas = sorted(df_filt["_fecha_str"].unique())
@@ -340,10 +421,17 @@ def main():
 
             st.subheader(f"Comparativa: {_fmt_fecha(día_a)} vs {_fmt_fecha(día_b)}")
             c1, c2, c3 = st.columns(3)
-            c1.metric("Día A - Total servicios", _fmt_entero(df_a["_weight"].sum()))
-            c2.metric("Día B - Total servicios", _fmt_entero(df_b["_weight"].sum()))
-            diff = df_b["_weight"].sum() - df_a["_weight"].sum()
+            n_a, n_b = len(df_a), len(df_b)
+            c1.metric("Día A - Total servicios", _fmt_entero(n_a))
+            c2.metric("Día B - Total servicios", _fmt_entero(n_b))
+            diff = n_b - n_a
             c3.metric("Diferencia (B - A)", _fmt_entero(diff), delta=f"{_fmt_entero(diff)}")
+            if "_cancelado" in df_a.columns:
+                compl_a = int((~df_a["_cancelado"]).sum())
+                canc_a = int(df_a["_cancelado"].sum())
+                compl_b = int((~df_b["_cancelado"]).sum())
+                canc_b = int(df_b["_cancelado"].sum())
+                st.caption(f"**Día A:** {_fmt_entero(compl_a)} completados, {_fmt_entero(canc_a)} cancelados  —  **Día B:** {_fmt_entero(compl_b)} completados, {_fmt_entero(canc_b)} cancelados")
 
             map_col_a, map_col_b = st.columns(2)
             with map_col_a:
@@ -356,8 +444,8 @@ def main():
             zone_col = find_column(df, ZONE_COLS)
             if zone_col and "_zona" in df_filt.columns and df_filt["_zona"].astype(str).str.len().gt(0).any():
                 st.subheader("Comparativa por zona")
-                za = df_a.groupby("_zona", dropna=False)["_weight"].sum()
-                zb = df_b.groupby("_zona", dropna=False)["_weight"].sum()
+                za = df_a.groupby("_zona", dropna=False).size()
+                zb = df_b.groupby("_zona", dropna=False).size()
                 comp = pd.DataFrame({"Día A": za, "Día B": zb}).fillna(0)
                 comp["Diferencia"] = comp["Día B"] - comp["Día A"]
                 comp_show = comp.fillna(0).round(0).astype(int)
