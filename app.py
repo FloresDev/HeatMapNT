@@ -573,10 +573,39 @@ def main():
         if df_filt.empty:
             st.warning("No hay datos con los filtros seleccionados.")
         else:
+            vista_mapa = st.radio(
+                "Vista del mapa",
+                options=["por_servicio", "por_zona"],
+                format_func=lambda v: "Por servicio" if v == "por_servicio" else "Por zona (agregado por identificador)",
+                horizontal=True,
+                key="vista_mapa",
+            )
             if "_cancelado" in df_filt.columns:
                 nc, nk = int((~df_filt["_cancelado"]).sum()), int(df_filt["_cancelado"].sum())
                 st.caption(f"Servicios en el mapa: **{_fmt_entero(nc)}** completados, **{_fmt_entero(nk)}** cancelados")
-            m = create_heatmap(df_filt)
+            # Datos para el mapa según la vista elegida
+            df_mapa = df_filt
+            if vista_mapa == "por_zona":
+                zone_col = find_column(df, ZONE_COLS)
+                if zone_col and "_zona" in df_filt.columns:
+                    zonas_df = load_zonas_mapping()
+                    if zonas_df is not None:
+                        col_z = "zona" if "zona" in zonas_df.columns else zonas_df.columns[0]
+                        zonas_sel = zonas_df[[col_z, "lat", "lon"]].copy()
+                        zonas_sel = zonas_sel.rename(columns={col_z: "_zona", "lat": "_lat", "lon": "_lon"})
+                        agg = df_filt.groupby("_zona", dropna=False).size().reset_index(name="_weight")
+                        df_zonas = agg.merge(zonas_sel, on="_zona", how="left")
+                        df_zonas = df_zonas.dropna(subset=["_lat", "_lon"])
+                        if not df_zonas.empty:
+                            df_mapa = df_zonas
+                        else:
+                            st.warning("No se pudieron obtener coordenadas para las zonas agregadas; se usa la vista por servicio.")
+                    else:
+                        st.warning("No se pudo cargar `zonas_coordenadas.csv`; se usa la vista por servicio.")
+                else:
+                    st.warning("El CSV no tiene columna de zona; solo se puede usar vista por servicio.")
+
+            m = create_heatmap(df_mapa)
             st_folium(m, use_container_width=True, height=500)
             # Ranking por zona (identificador de zona como clave principal)
             zone_col = find_column(df, ZONE_COLS)
